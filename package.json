@@ -1,0 +1,24 @@
+{
+  "name": "extra-crawler",
+  "version": "2.0.0",
+  "description": "Dual-core web crawler for extra.com.br — Axios (fast) + Puppeteer/Chrome (JS fallback)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "start:verbose": "DEBUG=crawler node src/index.js",
+    "start:headful": "PUPPETEER_HEADLESS=false node src/index.js"
+  },
+  "keywords": ["crawler", "web-scraping", "nodejs", "axios", "puppeteer", "cheerio", "chrome"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "cheerio": "^1.0.0",
+    "chalk": "^4.1.2",
+    "p-limit": "^3.1.0",
+    "puppeteer": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
