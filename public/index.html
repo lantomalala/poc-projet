@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Goofy Newton - Crawler UI</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>🚀 Goofy Newton Crawler</h1>
+      <p>Web Crawler Interface with Real-time Logs</p>
+    </header>
+
+    <main>
+      <!-- Section Input -->
+      <section class="control-panel">
+        <div class="input-group">
+          <label for="urlInput">URL to Crawl</label>
+          <div class="input-wrapper">
+            <input 
+              type="url" 
+              id="urlInput" 
+              placeholder="https://www.extra.com.br/" 
+              value="https://www.extra.com.br/"
+            >
+            <button id="startBtn" class="btn btn-primary">
+              <span class="icon">▶</span> Start
+            </button>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="stopBtn" class="btn btn-danger" disabled>
+            <span class="icon">⏹</span> Stop
+          </button>
+          <button id="downloadBtn" class="btn btn-success">
+            <span class="icon">⬇</span> Download
+          </button>
+          <button id="clearBtn" class="btn btn-secondary">
+            <span class="icon">🗑</span> Clear
+          </button>
+        </div>
+
+        <div class="status">
+          <div class="status-item">
+            <span class="label">Status:</span>
+            <span id="statusIndicator" class="status-value status-idle">Idle</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Lines:</span>
+            <span id="logCount" class="status-value">0</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section Log -->
+      <section class="log-section">
+        <div class="log-header">
+          <h2>📋 Logs</h2>
+          <div class="log-controls">
+            <button id="autoScrollBtn" class="btn-icon active" title="Auto-scroll">
+              📌
+            </button>
+          </div>
+        </div>
+        <div id="logContainer" class="log-container">
+          <div class="log-placeholder">Waiting for crawler...</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Goofy Newton © 2024 | Real-time Web Crawler</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

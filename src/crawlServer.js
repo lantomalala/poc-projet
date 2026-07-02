@@ -1,29 +1,34 @@
 /**
- * index.js
- * Entry point — bootstraps the crawler and prints a summary when done.
+ * crawlServer.js
+ * Lancer le crawler avec une URL personnalisée depuis l'interface.
  */
 
 'use strict';
 
+// Charger la config avant d'importer les modules
+const config = require('./config');
+const crawlUrl = process.env.CRAWL_URL || config.START_URL;
+
+// Surcharger la config avec l'URL fournie
+Object.defineProperty(config, 'START_URL', {
+  value: crawlUrl,
+  writable: false
+});
+
 const { runCrawl, getStats } = require('./crawler');
 const logger = require('./logger');
 
-// ---------------------------------------------------------------------------
-// Graceful shutdown on CTRL+C
-// ---------------------------------------------------------------------------
+// Graceful shutdown
 process.on('SIGINT', () => {
   logger.info('Interrupt received — printing summary and exiting…');
   printSummary();
-  logger.close().then(() => process.exit(0));
+  logger.close();
+  process.exit(0);
 });
 
 process.on('unhandledRejection', (reason) => {
   logger.error('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
 });
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 function printSummary() {
   const stats = getStats();
@@ -38,8 +43,8 @@ function printSummary() {
   } catch (err) {
     logger.error('Fatal error in crawler', err);
     printSummary();
-    process.exitCode = 1;
+    process.exit(1);
   } finally {
-    await logger.close();
+    logger.close();
   }
 })();

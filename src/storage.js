@@ -56,4 +56,16 @@ async function pageExists(url) {
   }
 }
 
-module.exports = { savePage, pageExists };
+/**
+ * Reads the saved HTML content of a page from disk.
+ *
+ * @param {string} url
+ * @returns {Promise<string>}
+ */
+async function readPage(url) {
+  const relativePath = urlToFilePath(url);
+  const filePath = path.join(OUTPUT_DIR, relativePath, 'index.html');
+  return fs.readFile(filePath, 'utf8');
+}
+
+module.exports = { savePage, pageExists, readPage };

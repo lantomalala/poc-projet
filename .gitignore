@@ -1,2 +1,16 @@
 node_modules/
+crawl/
+.vscode/
+.env
+.DS_Store
+.cursorrules
+.cursorignore
+.cursor
+
+# Artefacts de crawl (trop volumineux pour GitHub)
 *.log
+*.warc
+*.work
+crawl.warc
+crawl.work
+crawl.log

@@ -1,0 +1,104 @@
+Documentation du Projet : Extra.com.br Crawler
+===============================================
+
+Description Générale
+--------------------
+Ce projet est un web crawler (robot d'exploration) modulaire construit avec Node.js, Axios et Cheerio. Il explore le site web "extra.com.br" de manière itérative (en largeur d'abord - BFS) et enregistre les pages HTML localement, tout en reproduisant l'arborescence des URL du site.
+
+Fonctionnalités Principales
+---------------------------
+- Téléchargement des pages HTML avec Axios (inclut une logique de nouvelle tentative automatique en cas d'erreur temporaire ou de blocage 429/503).
+- Sauvegarde des pages dans une arborescence de dossiers qui reflète la structure des URL du site.
+- Extraction des liens internes à l'aide de Cheerio.
+- Déduplication : chaque URL est visitée une seule fois.
+- Concurrence paramétrable (5 requêtes simultanées par défaut).
+- Délai d'attente (politeness delay) entre les lots de requêtes.
+- Limites configurables concernant la profondeur maximale de l'exploration et le nombre total de pages à récupérer.
+- Historique de session via des fichiers d'état (.work) permettant de reprendre un crawl interrompu.
+- Ignorance des liens externes, des ancres (#), et d'autres schémas (mailto:, javascript:, tel:).
+
+Structure du Projet
+-------------------
+Le projet s'organise autour des fichiers suivants :
+
+- package.json    : Informations sur le projet et dépendances.
+- README.md       : Documentation de base du projet (en anglais).
+- src/
+  - index.js      : Point d'entrée principal du programme.
+  - config.js     : Tous les paramètres ajustables pour contrôler le crawler.
+  - crawler.js    : Moteur de crawl BFS (gestion de la file d'attente et concurrence).
+  - fetcher.js    : Client HTTP Axios avec la logique de reprise (retry).
+  - parser.js     : Extracteur de liens basé sur Cheerio.
+  - storage.js    : Sauvegarde des fichiers HTML sur le disque (mappage URL vers dossier).
+  - urlUtils.js   : Résolution d'URL, validation et conversion des chemins.
+  - logger.js     : Système de log formaté en couleur pour la console.
+  - ui.js         : Interface utilisateur optionnelle.
+
+Prérequis
+---------
+- Node.js (version 18.0.0 ou supérieure).
+
+Installation et Lancement
+-------------------------
+1. Installation des dépendances :
+   Dans le terminal, exécutez :
+   npm install
+
+2. Lancement du crawler :
+   Pour démarrer avec la configuration par défaut :
+   npm start
+
+   Pour démarrer avec une session fraîche (suppression des fichiers .work et .log précédents) :
+   npm run start:fresh
+
+   Pour démarrer l'interface utilisateur :
+   npm run ui
+
+Fichiers Générés
+----------------
+- crawl/        : Dossier racine par défaut contenant les fichiers HTML sauvegardés.
+- crawl.warc    : Fichier d'archive web standard (Web Archive) compilant les pages.
+- crawl.work    : Fichier de sauvegarde d'état permettant de reprendre le crawl s'il s'arrête.
+- crawl.log     : Fichier journal (log) reprenant tous les événements du crawl.
+
+Configuration
+-------------
+Tous les paramètres sont modifiables dans le fichier `src/config.js`. Voici les plus importants :
+
+- START_URL             : L'URL de départ du crawl (par défaut : 'https://www.extra.com.br/').
+- TARGET_DOMAIN         : Limite l'exploration à ce domaine et ses sous-domaines.
+- OUTPUT_DIR            : Dossier d'enregistrement des pages.
+- CONCURRENCY           : Nombre de requêtes HTTP simultanées (par défaut : 5).
+- BATCH_DELAY           : Temps d'attente entre les lots de requêtes (en ms).
+- REQUEST_TIMEOUT       : Temps d'attente maximal pour une requête (en ms).
+- MAX_DEPTH             : Profondeur maximale de l'exploration (0 = illimité).
+- MAX_PAGES             : Nombre maximal de pages à explorer (0 = illimité, défini à 500 dans la configuration actuelle).
+- BLACKLIST_BACKOFF_MS  : Délai avant de réessayer une URL bloquée (429/503).
+- USER_AGENT            : User-Agent utilisé par le bot pour se faire passer pour un navigateur classique.
+
+Remarques
+---------
+Ce crawler respecte une approche polie (breadth-first, delais, user-agent simulé). Pour tester sur un grand site comme extra.com.br, il est fortement recommandé de conserver des limites strictes (MAX_PAGES, MAX_DEPTH) pour éviter une surcharge du serveur cible ou un processus qui dure plusieurs heures.
+
+Contraintes, Coûts et Besoins
+-----------------------------
+### 1. Contraintes de Liste Noire (BL - Blacklist)
+Lorsqu'un crawler navigue trop rapidement sur un site, les serveurs (comme ceux de `extra.com.br`) peuvent détecter un comportement anormal et le bloquer temporairement. Cela se traduit généralement par des erreurs HTTP 429 (Too Many Requests) ou 503 (Service Unavailable).
+Pour contourner et gérer cette contrainte, le crawler intègre des mécanismes de protection dans `src/config.js` :
+- Délai de politesse (BATCH_DELAY) : Le robot attend un certain temps entre chaque lot de requêtes pour ne pas surcharger le serveur cible.
+- Backoff exponentiel (BLACKLIST_BACKOFF_MS) : Si le bot se fait bloquer, il arrête ses requêtes et attend un temps défini avant de réessayer.
+- Limite de tentatives (BLACKLIST_MAX_RETRIES) : Le bot essaiera de recontacter une page bloquée un nombre maximum de fois avant d'abandonner.
+- Faux User-Agent (USER_AGENT) : Le bot se fait passer pour un navigateur classique afin d'éviter les filtres anti-bots basiques.
+
+### 2. Coût d'Internet (Bande passante)
+Faire tourner un crawler peut consommer énormément de données internet, ce qui peut avoir un coût si votre connexion est limitée. 
+- Téléchargement massif : Le crawler télécharge chaque page HTML qu'il trouve. Un site e-commerce contient des milliers de pages.
+- Génération du fichier .warc : En plus de sauvegarder le code HTML dans des dossiers (`crawl/`), le projet crée une archive web (`crawl.warc`). Ce fichier regroupe toutes les requêtes et réponses, doublant virtuellement la quantité de données manipulées.
+- Comment limiter ce coût ? : Vous pouvez contrôler cette consommation en ajustant la limite maximale de pages (MAX_PAGES) et la profondeur d'exploration (MAX_DEPTH). 
+
+### 3. Besoins (Matériels et Logiciels)
+Pour faire fonctionner ce crawler de manière optimale, voici les besoins requis :
+- Logiciels : Node.js doit être installé sur votre machine (version 18.0.0 ou supérieure).
+- Espace de Stockage (Disque dur) : C'est le besoin le plus critique. Le dossier `crawl/` va recréer l'arborescence du site. De plus, les fichiers `crawl.log` et surtout `crawl.warc` peuvent rapidement atteindre plusieurs giga-octets si aucune limite n'est fixée.
+- Mémoire Vive (RAM) : La gestion de la file d'attente des URL à visiter (le graphe de navigation) nécessite de la mémoire. Garder une CONCURRENCY basse (ex: 5) aide à ne pas saturer la RAM.
+- Réseau stable : Une connexion internet stable est préférable, bien que le fichier de sauvegarde `crawl.work` permette de reprendre le travail là où il s'est arrêté.

@@ -26,10 +26,25 @@ module.exports = {
 
   /**
    * Root directory where downloaded pages are saved.
-   * Follows the same folder hierarchy as the URL path:
-   *   https://extra.com.br/tv/4k/ → crawl/extra.com.br/tv/4k/index.html
+   * Follows the same folder hierarchy as the URL path.
    */
   OUTPUT_DIR: 'crawl',
+
+  /**
+   * Path to the .warc file — compiles crawled pages into standard Web Archive format.
+   */
+  WARC_FILE: 'crawl.warc',
+
+  /**
+   * Path to the .work file — persists queue + visited state between runs.
+   * Allows resuming a crawl from where it was interrupted.
+   */
+  WORK_FILE: 'crawl.work',
+
+  /**
+   * Path to the log file — all events are appended here during the run.
+   */
+  LOG_FILE: 'crawl.log',
 
   // ---------------------------------------------------------------------------
   // Concurrency & rate limiting
@@ -42,45 +57,48 @@ module.exports = {
   CONCURRENCY: 5,
 
   /**
-   * Number of Chrome tabs opened simultaneously (Puppeteer core).
-   * Each tab uses ~150–200 MB of RAM, so keep this modest (1–3).
-   */
-  PUPPETEER_CONCURRENCY: 2,
-
-  /**
    * Minimum wait between batches of requests (ms).
    * Acts as a "politeness delay" so we don't hammer the server.
    */
-  BATCH_DELAY: 600,
+  BATCH_DELAY: 800,
+
+  /**
+   * When blacklisted (429/503), wait this many milliseconds before retrying.
+   * Multiplied by the retry attempt number (exponential-ish backoff).
+   */
+  BLACKLIST_BACKOFF_MS: 10_000,
+
+  /**
+   * Maximum number of retry attempts for a blacklisted URL.
+   * À chaque tentative le proxy est automatiquement roté (voir proxyManager.js).
+   */
+  BLACKLIST_MAX_RETRIES: 3,
 
   // ---------------------------------------------------------------------------
   // Limits
   // ---------------------------------------------------------------------------
 
-  /** HTTP / navigation timeout for a single request, in milliseconds. */
+  /** HTTP navigation timeout for a single request, in milliseconds. */
   REQUEST_TIMEOUT: 20_000,
 
   /**
    * Maximum crawl depth relative to START_URL.
    * 0 = unlimited (crawl everything reachable).
-   * 1 = only the start page.
-   * 2 = start page + all links from it.
    */
   MAX_DEPTH: 0,
 
   /**
    * Hard cap on total pages crawled.
    * 0 = unlimited.
-   * Useful during testing to avoid accidentally crawling a whole site.
    */
-  MAX_PAGES: 0,
+  MAX_PAGES: 50000,
 
   // ---------------------------------------------------------------------------
   // HTTP identity
   // ---------------------------------------------------------------------------
 
   /**
-   * User-Agent string sent with every Axios request (and used in Puppeteer).
+   * User-Agent string sent with every Axios request.
    * Looks like a real Chrome browser on Windows to avoid basic bot checks.
    */
   USER_AGENT:
@@ -90,7 +108,6 @@ module.exports = {
 
   /**
    * Extra HTTP headers attached to every Axios request.
-   * Puppeteer sets similar headers via page.setExtraHTTPHeaders().
    */
   DEFAULT_HEADERS: {
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',

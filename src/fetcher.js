@@ -1,255 +1,186 @@
 /**
  * fetcher.js
  *
- * The central HTTP fetching layer — acts as a smart dispatcher between
- * two scraping cores:
- *
- *   Core 1 — Axios   : Fast, lightweight, ideal for plain HTML pages.
- *   Core 2 — Puppeteer: Real Chrome instance, handles JS-rendered pages,
- *                        anti-bot challenges, lazy-loaded content, etc.
+ * Axios-only HTTP fetching layer with intelligent blacklist detection, proxy
+ * rotation, and retry.
  *
  * Strategy:
- *  1. Try Axios first (quick and cheap).
- *  2. If Axios fails with a bot-detection-like status (403, 406, 429) or
- *     returns what looks like an empty/JS-gate page, fall through to
- *     Puppeteer automatically.
- *  3. Puppeteer retries once on transient network errors.
- *
- * This way the crawler is both fast on ordinary pages and resilient on
- * protected ones — without requiring manual configuration per URL.
+ *  1. Every request is sent through the current proxy (proxyManager).
+ *  2. If the server returns a BLACKLIST status (403, 429, 503, 407) or a JS
+ *     challenge page is detected:
+ *       - The proxy is immediately rotated.
+ *       - The error is marked .isBlacklist = true so the caller (crawler.js)
+ *         can schedule an exponential-backoff retry with the new proxy.
+ *  3. Transient network errors (ECONNABORTED, ECONNRESET, ETIMEDOUT) are
+ *     retried internally up to AXIOS_MAX_RETRIES times before giving up.
  */
+
+'use strict';
 
 const axios = require('axios');
-const { fetchWithBrowser } = require('./browserCore');
 const { REQUEST_TIMEOUT, USER_AGENT, DEFAULT_HEADERS } = require('./config');
+const proxyManager = require('./proxyManager');
 const logger = require('./logger');
-const { randomDelay } = require('./humanBehavior');
 
 // ---------------------------------------------------------------------------
-// Axios client setup
+// Constants
 // ---------------------------------------------------------------------------
-
-/** HTTP status codes that are transient and worth retrying (Axios core). */
-const AXIOS_RETRYABLE = new Set([429, 500, 502, 503, 504]);
 
 /**
- * HTTP status codes that suggest the server is actively blocking us — a
- * signal that we should escalate to the browser core instead of retrying
- * with Axios (which would produce the same outcome).
+ * HTTP status codes that mean "you are being rate-limited or blocked".
+ * The crawler will back off and retry these automatically.
  */
-const BOT_BLOCK_STATUSES = new Set([403, 406, 407, 503]);
+const BLACKLIST_STATUSES = new Set([403, 406, 407, 429, 503]);
 
-/** Max Axios retry attempts before escalating or giving up. */
+/**
+ * HTTP status codes that are transient server errors worth retrying once.
+ */
+const TRANSIENT_STATUSES = new Set([500, 502, 504]);
+
+/** Internal Axios retries for transient network/server errors. */
 const AXIOS_MAX_RETRIES = 2;
 
-/**
- * Creates a shared Axios instance with sensible defaults:
- *   - Compressed responses (gzip/brotli)
- *   - Redirect following
- *   - Only 2xx treated as success
- */
-function createAxiosClient() {
-  return axios.create({
-    timeout: REQUEST_TIMEOUT,
-    headers: {
-      'User-Agent': USER_AGENT,
-      ...DEFAULT_HEADERS,
-    },
-    decompress: true,
-    maxRedirects: 10,
-    // Axios throws on non-2xx — we catch and inspect in fetchWithAxios()
-    validateStatus: (status) => status >= 200 && status < 300,
-  });
-}
+// ---------------------------------------------------------------------------
+// Axios client
+// ---------------------------------------------------------------------------
 
-const axiosClient = createAxiosClient();
+/**
+ * Shared Axios instance with sensible, crawler-friendly defaults.
+ * The proxy is injected per-request (not here) so that rotation is transparent.
+ */
+const axiosClient = axios.create({
+  timeout: REQUEST_TIMEOUT,
+  headers: {
+    'User-Agent': USER_AGENT,
+    ...DEFAULT_HEADERS,
+  },
+  decompress: true,
+  maxRedirects: 10,
+  // Only 2xx treated as success — everything else throws so we can inspect it.
+  validateStatus: (status) => status >= 200 && status < 300,
+});
 
 // ---------------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if the HTML looks like a JavaScript-only "please wait" page
- * rather than real content — a common anti-scraping technique.
- *
- * Heuristics checked:
- *  - Very short body (likely a redirect shell or error page)
- *  - Presence of bot-detection script tags (Cloudflare, DataDome, etc.)
+ * Returns true if the HTML body looks like a JavaScript-only challenge/gate
+ * page rather than real content — a common anti-scraping technique.
  *
  * @param {string} html
  * @returns {boolean}
  */
 function looksLikeJsGate(html) {
-  if (!html || html.length < 500) return true;
+  if (!html || html.length < 300) return true;
 
   const lower = html.toLowerCase();
-  const jsGateMarkers = [
+  const markers = [
     'challenge-platform',       // Cloudflare
     '__cf_chl',                 // Cloudflare challenge
-    'datadome',                 // DataDome bot manager
+    'datadome',                 // DataDome
     'px.js',                    // PerimeterX
     '_pxhd',                    // PerimeterX cookie
-    'recaptcha',                // reCAPTCHA gate
-    'please enable javascript', // generic JS gate message
+    'recaptcha',                // reCAPTCHA
+    'please enable javascript',
     'you need to enable javascript',
     'this site requires javascript',
+    'bot detected',
+    'access denied',
   ];
 
-  return jsGateMarkers.some((marker) => lower.includes(marker));
+  return markers.some((m) => lower.includes(m));
+}
+
+/**
+ * Sleeps for ms milliseconds.
+ * @param {number} ms
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
-// Core 1 — Axios fetch
+// Core fetch function
 // ---------------------------------------------------------------------------
 
 /**
- * Attempts to fetch a URL using the Axios HTTP client.
+ * Fetches the HTML content of a URL using Axios through the current proxy.
  *
- * Retries on transient server errors with an exponential backoff.
- * Throws with a `.escalate = true` flag when the server appears to be
- * blocking us, so the caller knows to try Puppeteer instead.
+ * On success, returns `{ html, finalUrl }`.
  *
- * @param {string} url
- * @param {number} [attempt=0]  Internal retry counter.
- * @returns {Promise<{ html: string, finalUrl: string, core: 'axios' }>}
+ * On blacklist (403/429/503/JS-gate), rotates the proxy then throws an error
+ * with `err.isBlacklist = true` so the caller can schedule a retry — the next
+ * attempt will automatically use the newly rotated proxy.
+ *
+ * On transient errors, retries internally up to AXIOS_MAX_RETRIES times.
+ *
+ * @param {string} url       Absolute URL to fetch.
+ * @param {number} [attempt] Internal retry counter (0-based).
+ * @returns {Promise<{ html: string, finalUrl: string }>}
+ * @throws {Error}  err.isBlacklist = true when server is blocking us.
+ *                  err.status      = HTTP status code (if applicable).
  */
-async function fetchWithAxios(url, attempt = 0) {
-  try {
-    const response = await axiosClient.get(url, { responseType: 'text' });
+async function fetchPage(url, attempt = 0) {
+  const proxy = proxyManager.getProxy();
+  logger.info(`[Proxy] ${proxyManager.currentProxyLabel()} → ${url}`);
 
-    const html = response.data;
+  try {
+    const response = await axiosClient.get(url, { responseType: 'text', proxy });
+
+    const html     = response.data;
     const finalUrl = response.request?.res?.responseUrl ?? url;
 
-    // Even a 200 OK can be a JS gate — escalate to browser if so
+    // Even a 200 OK can hide a JS gate — treat it like a soft block
     if (looksLikeJsGate(html)) {
-      const err = new Error('Axios got a JS gate page — escalating to browser');
-      err.escalate = true;
+      proxyManager.rotateProxy('JS gate détecté');
+      const err      = new Error('JS gate / empty page detected');
+      err.isBlacklist = true;
+      err.status      = 200;
       throw err;
     }
 
-    return { html, finalUrl, core: 'axios' };
+    return { html, finalUrl };
+
   } catch (err) {
     const status = err.response?.status;
 
-    // Bot-block: escalate immediately, no point retrying with Axios
-    if (status && BOT_BLOCK_STATUSES.has(status)) {
-      const escalated = new Error(`HTTP ${status} — bot block detected, escalating to browser`);
-      escalated.status = status;
-      escalated.escalate = true;
-      throw escalated;
+    // ── Blacklisted: server is actively blocking us ──────────────────────────
+    if (status && BLACKLIST_STATUSES.has(status)) {
+      proxyManager.rotateProxy(`HTTP ${status}`);
+      const e      = new Error(`HTTP ${status} — blacklisted`);
+      e.isBlacklist = true;
+      e.status      = status;
+      throw e;
     }
 
-    // Transient error: retry with backoff
+    // Propagate a blacklist flag already set (e.g. by the JS-gate check above)
+    if (err.isBlacklist) throw err;
+
+    // ── Transient network/server error: retry with back-off ──────────────────
     const isTransient =
-      err.code === 'ECONNABORTED' ||
-      err.code === 'ECONNRESET' ||
-      err.code === 'ETIMEDOUT' ||
-      (status && AXIOS_RETRYABLE.has(status));
+      err.code === 'ECONNABORTED'  ||
+      err.code === 'ECONNRESET'    ||
+      err.code === 'ETIMEDOUT'     ||
+      err.code === 'ENOTFOUND'     ||
+      (status && TRANSIENT_STATUSES.has(status));
 
     if (isTransient && attempt < AXIOS_MAX_RETRIES) {
       const delay = 1500 * (attempt + 1);
-      await randomDelay(delay, delay + 500);
-      return fetchWithAxios(url, attempt + 1);
+      logger.info(`Transient error (${err.code ?? status}) for ${url} — retrying in ${delay}ms…`);
+      await sleep(delay);
+      return fetchPage(url, attempt + 1);
     }
 
-    // Escalate flag is already set by the JS-gate check above
-    if (err.escalate) throw err;
-
-    // Enrich generic errors with HTTP status
+    // ── Permanent error ───────────────────────────────────────────────────────
     if (status) {
-      const enriched = new Error(`HTTP ${status} — ${err.message}`);
-      enriched.status = status;
-      throw enriched;
+      const e  = new Error(`HTTP ${status} — ${err.message}`);
+      e.status = status;
+      throw e;
     }
 
     throw err;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Core 2 — Puppeteer fetch (with one retry)
-// ---------------------------------------------------------------------------
-
-/**
- * Fetches a URL using the Puppeteer browser core.
- * Retries once on transient navigation errors.
- *
- * @param {string} url
- * @param {number} [attempt=0]
- * @returns {Promise<{ html: string, finalUrl: string, core: 'puppeteer' }>}
- */
-async function fetchWithPuppeteer(url, attempt = 0) {
-  try {
-    const { html, finalUrl } = await fetchWithBrowser(url);
-    return { html, finalUrl, core: 'puppeteer' };
-  } catch (err) {
-    const isTransient =
-      err.message?.includes('net::ERR_') ||
-      err.message?.includes('Navigation timeout') ||
-      err.message?.includes('Protocol error');
-
-    if (isTransient && attempt < 1) {
-      await randomDelay(2000, 3500);
-      return fetchWithPuppeteer(url, attempt + 1);
-    }
-
-    throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Public dispatcher — tries Axios, falls back to Puppeteer
-// ---------------------------------------------------------------------------
-
-/**
- * Fetches the HTML content of a page, automatically choosing the best core:
- *
- *  - **Axios** is tried first (fast, no browser overhead).
- *  - **Puppeteer** is used when Axios fails with a bot-block status, returns
- *    a JS gate page, or throws a non-retryable error.
- *
- * The returned object includes a `core` field so callers can log which
- * engine was responsible.
- *
- * @param {string} url  Absolute URL to fetch.
- * @returns {Promise<{ html: string, finalUrl: string, core: 'axios' | 'puppeteer' }>}
- * @throws {Error} If both cores fail.
- */
-async function fetchPage(url) {
-  // --- Attempt 1: Axios core ---
-  try {
-    const result = await fetchWithAxios(url);
-    return result;
-  } catch (axiosErr) {
-    // Only escalate to browser when warranted
-    const shouldEscalate =
-      axiosErr.escalate === true ||
-      axiosErr.code === 'ENOTFOUND' ||      // DNS failure — also worth trying browser
-      axiosErr.code === 'ECONNREFUSED';
-
-    if (!shouldEscalate) throw axiosErr;
-
-    logger.info(
-      `↩ Axios failed for ${url} (${axiosErr.message}) — switching to Puppeteer core…`
-    );
-  }
-
-  // --- Attempt 2: Puppeteer core ---
-  try {
-    const result = await fetchWithPuppeteer(url);
-    return result;
-  } catch (puppeteerErr) {
-    // Both cores failed — surface a descriptive combined error
-    const combined = new Error(
-      `Both scraping cores failed for ${url}: ${puppeteerErr.message}`
-    );
-    combined.status = puppeteerErr.status;
-    throw combined;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
 
 module.exports = { fetchPage };

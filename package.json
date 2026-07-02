@@ -1,14 +1,14 @@
 {
   "name": "extra-crawler",
-  "version": "2.0.0",
-  "description": "Dual-core web crawler for extra.com.br — Axios (fast) + Puppeteer/Chrome (JS fallback)",
+  "version": "3.0.0",
+  "description": "Axios-only BFS crawler — 1000 pages, blacklist-aware retry, .work file state, .log output",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "start:verbose": "DEBUG=crawler node src/index.js",
-    "start:headful": "PUPPETEER_HEADLESS=false node src/index.js"
+    "start:fresh": "node -e \"require('fs').unlink('crawl.work', () => {}); require('fs').unlink('crawl.log', () => {});\" && node src/index.js",
+    "ui": "node src/ui.js"
   },
-  "keywords": ["crawler", "web-scraping", "nodejs", "axios", "puppeteer", "cheerio", "chrome"],
+  "keywords": ["crawler", "web-scraping", "nodejs", "axios", "cheerio"],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -16,7 +16,7 @@
     "cheerio": "^1.0.0",
     "chalk": "^4.1.2",
     "p-limit": "^3.1.0",
-    "puppeteer": "^22.0.0"
+    "express": "^4.18.2"
   },
   "engines": {
     "node": ">=18.0.0"
